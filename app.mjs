@@ -219,7 +219,8 @@ export function createApp(appOrigin, asset = () => null) {
   return async function app(req, res) {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Referrer-Policy', 'no-referrer');
+    // Same-origin form submissions need a non-null Origin for the POST check.
+    res.setHeader('Referrer-Policy', 'same-origin');
     res.setHeader('Content-Security-Policy', "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     let user;
     let path = '';
