@@ -13,7 +13,7 @@ import { encodeCBOR } from '@levischuck/tiny-cbor';
 process.env.DB_FILE = ':memory:';
 process.env.WORK_TIME_ZONE = 'Asia/Tashkent';
 await import('./local-db.mjs');
-const { createEntry, editEntry, one, run, workClock, hashPassword } = await import('./model.mjs');
+const { createEntry, editEntry, one, run, workClock, hashPassword, markNoWork, setMonthClosed } = await import('./model.mjs');
 const date = time => new Date('2026-11-06T' + time + ':00+05:00');
 
 test('Ish vaqti: juma, shanba, yakshanba va dushanba', () => {
@@ -40,7 +40,11 @@ test('Dona, tarif, takroriy yozuv, maxfiylik va tahrir tarixi', async () => {
   await assert.rejects(() => createEntry(1, 1, 25, date('05:59')));
   await assert.rejects(() => createEntry(2, 1, 25, date('17:59')));
   await assert.rejects(() => createEntry(1, 1, 25, date('18:00')));
+  await markNoWork(1, '2026-11-06', date('17:30'));
+  assert.ok(await one('SELECT 1 FROM no_work WHERE worker=1'));
   const id = await createEntry(1, 1, 25, date('17:59'));
+  assert.equal(await one('SELECT 1 FROM no_work WHERE worker=1'), undefined);
+  await assert.rejects(() => markNoWork(1, '2026-11-06', date('17:59')), /ish yozuvi kiritilgan/);
   await assert.rejects(() => createEntry(1, 1, 25, date('17:59')));
   await assert.rejects(() => editEntry(other, id, 27, 'Sabab', 25, date('19:00')));
   await assert.rejects(() => editEntry(worker, id, 27, '  ', 25, date('19:00')));
@@ -58,6 +62,14 @@ test('Dona, tarif, takroriy yozuv, maxfiylik va tahrir tarixi', async () => {
   await run('INSERT INTO completed_orders VALUES(1)');
   await assert.rejects(() => createEntry(1, 1, 25, date('17:59')), /Buyurtma tugatilgan/);
   await assert.rejects(() => editEntry(worker, id, 28, 'Tuzatish', 26, date('19:59')), /Buyurtma tugatilgan/);
+  const december = new Date('2026-12-01T12:00:00+05:00');
+  await assert.rejects(() => setMonthClosed('2026-11', 3, true, '', date('20:00')), /tugagan oyni/);
+  await setMonthClosed('2026-11', 3, true, '', december);
+  await assert.rejects(() => editEntry(admin, id, 28, 'Tuzatish', 26, december), /Bu oy yopilgan/);
+  await assert.rejects(() => setMonthClosed('2026-11', 3, false, '', december));
+  await setMonthClosed('2026-11', 3, false, 'Hisobni tekshirish', december);
+  await editEntry(admin, id, 28, 'Ikki dona qo‘shildi', 26, december);
+  assert.equal((await one('SELECT reason FROM month_audit ORDER BY id DESC LIMIT 1')).reason, 'Hisobni tekshirish');
 });
 
 async function loginFlow(t, netlify = false) {
@@ -184,6 +196,13 @@ async function loginFlow(t, netlify = false) {
   assert.equal(verified.status, 200, await verified.text());
   const report = await admin('/admin/export?month=2026-11');
   assert.match(await report.text(), /7650/);
+  assert.equal((await admin('/admin/brigade', { worker: 2, brigade: 'Birinchi brigada' })).status, 303);
+  assert.equal((await admin('/admin/assign', { worker: 2, operation: 1 })).status, 303);
+  const dashboard = await (await admin('/?todayOrder=1&brigade=Birinchi+brigada')).text();
+  assert.match(dashboard, /Bugun kim kiritmadi/);
+  assert.match(dashboard, /value="Birinchi brigada" selected/);
+  assert.match(dashboard, /<progress[^>]+value="17" max="100"/);
+  assert.match(await (await worker('/')).text(), /Mening oyligim/);
   assert.match(verified.headers.get('set-cookie'), /Max-Age=2592000/);
   assert.equal((await worker('/admin/order/complete', { order: 1 })).status, 403);
   assert.equal((await admin('/admin/order/complete', { order: 1 })).headers.get('location'), '/#completed-orders');

@@ -44,3 +44,6 @@ summary { cursor: pointer; font-weight: 650; }
 .muted { color: #52645c; }
 #login-message { margin: 0; }
 @media(max-width: 520px) { .brand span { display: none; } .inline > label { width: 100%; } }
+.quick-entry button { min-height: 48px; width: 100%; }
+.quick-entry output { color: var(--ink); font-weight: 650; }
+progress { accent-color: #235d49; width: 7rem; vertical-align: middle; }

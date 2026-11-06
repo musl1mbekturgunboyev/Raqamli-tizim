@@ -40,6 +40,20 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE TABLE IF NOT EXISTS completed_orders (
   order_id INTEGER PRIMARY KEY REFERENCES orders
 );
+CREATE TABLE IF NOT EXISTS worker_brigades (
+  worker INTEGER PRIMARY KEY REFERENCES people, brigade TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS no_work (
+  worker INTEGER NOT NULL REFERENCES people, day TEXT NOT NULL, PRIMARY KEY(worker,day)
+);
+CREATE INDEX IF NOT EXISTS no_work_day ON no_work(day);
+CREATE TABLE IF NOT EXISTS closed_months (
+  month TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS month_audit (
+  id INTEGER PRIMARY KEY, month TEXT NOT NULL, actor INTEGER NOT NULL REFERENCES people,
+  action TEXT NOT NULL, reason TEXT, at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS operations (
   id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders, name TEXT NOT NULL,
   rate INTEGER NOT NULL CHECK(rate > 0), UNIQUE(order_id, name)
@@ -66,6 +80,27 @@ export const one = (sql, ...params) => currentStorage().one(sql, ...params);
 export const all = (sql, ...params) => currentStorage().all(sql, ...params);
 export const run = (sql, ...params) => currentStorage().run(sql, ...params);
 export const transaction = (work) => currentStorage().transaction(work);
+export const closedMonth = month => one('SELECT month FROM closed_months WHERE month=?', month);
+export async function markNoWork(worker, day, now = new Date()) {
+  const clock = workClock(now);
+  need(clock.date === day && clock.mode === 'entry', 'Belgi faqat bugun 06:00–18:00 oralig‘ida qo‘yiladi.');
+  await transaction(async () => {
+    need(!(await closedMonth(day.slice(0, 7))), 'Bu oy yopilgan.');
+    need(!(await one('SELECT 1 FROM entries WHERE worker=? AND day=? LIMIT 1', worker, day)), 'Bugun ish yozuvi kiritilgan.');
+    await run('INSERT OR IGNORE INTO no_work VALUES(?,?)', worker, day);
+  });
+}
+export async function setMonthClosed(month, actor, close, reason, now = new Date()) {
+  need(/^\d{4}-(0[1-9]|1[0-2])$/.test(month || '') && month < workClock(now).date.slice(0, 7),
+    'Faqat tugagan oyni yopish yoki qayta ochish mumkin.');
+  const explanation = close ? null : clean(reason, 500);
+  await transaction(async () => {
+    const result = close ? await run('INSERT OR IGNORE INTO closed_months VALUES(?)', month)
+      : await run('DELETE FROM closed_months WHERE month=?', month);
+    if (result.changes) await run('INSERT INTO month_audit(month,actor,action,reason,at) VALUES(?,?,?,?,?)',
+      month, actor, close ? 'close' : 'reopen', explanation, now.toISOString());
+  });
+}
 export const random = (n = 32) => randomBytes(n).toString('base64url');
 export const digest = (value) => createHash('sha256').update(value).digest('hex');
 export function hashPassword(password) {
@@ -114,6 +149,7 @@ export async function createEntry(worker, operation, qty, now = new Date()) {
   need(mode === 'entry', 'Yangi yozuv faqat ish kunlari 06:00–18:00 oralig‘ida kiritiladi.');
   need(Number.isInteger(qty) && qty > 0 && qty <= 1_000_000, 'Dona soni 1–1000000 oralig‘ida bo‘lsin.');
   return await transaction(async () => {
+    need(!(await closedMonth(date.slice(0, 7))), 'Bu oy yopilgan.');
     const assigned = await one(`SELECT o.rate, c.order_id closed FROM assignments a JOIN operations o ON o.id=a.operation
       LEFT JOIN completed_orders c ON c.order_id=o.order_id
       WHERE a.worker=? AND a.operation=?`, worker, operation);
@@ -122,6 +158,7 @@ export async function createEntry(worker, operation, qty, now = new Date()) {
     const result = await run(`INSERT INTO entries(worker,operation,day,qty,rate) VALUES(?,?,?,?,?)
       ON CONFLICT(worker,operation,day) DO NOTHING`, worker, operation, date, qty, assigned.rate);
     need(result.changes === 1, 'Bugungi yozuv mavjud. Tahrirlash bo‘limidan foydalaning.');
+    await run('DELETE FROM no_work WHERE worker=? AND day=?', worker, date);
     return result.lastInsertRowid;
   });
 }
@@ -134,6 +171,7 @@ export async function editEntry(person, id, qty, reason, expectedQty, now = new 
     const row = await one(`SELECT e.*, c.order_id closed FROM entries e JOIN operations o ON o.id=e.operation
       LEFT JOIN completed_orders c ON c.order_id=o.order_id WHERE e.id=?`, id);
     need(row && (person.role === 'admin' || person.id === row.worker), 'Yozuv topilmadi.');
+    need(!(await closedMonth(row.day.slice(0, 7))), 'Bu oy yopilgan.');
     need(person.role === 'admin' || (row.day === date && mode !== 'closed'), 'Bu kun yopilgan.');
     need(person.role === 'admin' || !row.closed, 'Buyurtma tugatilgan.');
     need(expectedQty === row.qty, 'Yozuv yangilangan. Sahifani qayta ochib tekshiring.');

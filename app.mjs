@@ -1,5 +1,5 @@
 import { random, digest, checkPassword, one, run, transaction, InputError, need, clean,
-  integer, loginId, activate, createEntry, editEntry, workClock } from './model.mjs';
+  integer, loginId, activate, createEntry, editEntry, workClock, markNoWork, setMonthClosed } from './model.mjs';
 import { adminPage, loginPage, message, monthEntries, monthFrom, workerPage } from './view.mjs';
 
 export function createApp(appOrigin, asset = () => null) {
@@ -192,6 +192,19 @@ export function createApp(appOrigin, asset = () => null) {
       need(worker, 'Ishchi topilmadi.');
       return send(res, await adminPage(user, monthFrom(), null, { login: worker.login, code: await activate(worker.id) }));
     }
+    if (path === '/admin/brigade') {
+      const worker = idValue(data.worker);
+      need(await person(worker), 'Ishchi topilmadi.');
+      const name = String(data.brigade || '').trim();
+      if (name) await run(`INSERT INTO worker_brigades VALUES(?,?)
+        ON CONFLICT(worker) DO UPDATE SET brigade=excluded.brigade`, worker, clean(name, 80));
+      else await run('DELETE FROM worker_brigades WHERE worker=?', worker);
+      return redirect(res, '/#workers');
+    }
+    if (path === '/admin/month/close' || path === '/admin/month/reopen') {
+      await setMonthClosed(data.month, user.id, path.endsWith('/close'), data.reason);
+      return redirect(res, '/?month=' + data.month + '#report');
+    }
     if (path === '/admin/order') {
       await run('INSERT INTO orders(name,target) VALUES(?,?)', clean(data.name), integer(data.target));
     } else if (path === '/admin/order/complete') {
@@ -241,7 +254,15 @@ export function createApp(appOrigin, asset = () => null) {
       if (req.method === 'GET') {
         const month = monthFrom(url.searchParams.get('month'));
         const worker = admin && url.searchParams.get('worker') ? idValue(url.searchParams.get('worker')) : null;
-        if (path === '/') return send(res, user ? admin ? await adminPage(user, month, worker, null, Number(url.searchParams.get('page')) || 1) : await workerPage(user, month) : loginPage());
+        if (path === '/') {
+          if (!user) return send(res, loginPage());
+          const query = url.searchParams;
+          const content = admin ? await adminPage(user, month, worker, null, Number(query.get('page')) || 1, {
+            order: query.get('todayOrder') ? idValue(query.get('todayOrder')) : null,
+            brigade: query.get('brigade'),
+          }) : await workerPage(user, month, query.get('saved'));
+          return send(res, content);
+        }
         if (path === '/admin/login') return user ? redirect(res) : send(res, loginPage(true));
         if (path === '/work/status' && user?.role === 'worker') return json(res, workClock());
         if (path === '/admin/export' && admin) {
@@ -276,8 +297,12 @@ export function createApp(appOrigin, asset = () => null) {
       if (user.role === 'worker' && path === '/work/add') {
         const now = new Date();
         need(workClock(now).date === data.day, 'Sana almashgan. Yangi kun sahifasini oching.');
-        await createEntry(user.id, idValue(data.operation), integer(data.qty), now);
-        return redirect(res);
+        const id = await createEntry(user.id, idValue(data.operation), integer(data.qty), now);
+        return redirect(res, '/?saved=' + id + '#today-work');
+      }
+      if (user.role === 'worker' && path === '/work/no-work') {
+        await markNoWork(user.id, data.day);
+        return redirect(res, '/#today-work');
       }
       if (user.role === 'worker' && path === '/work/edit') {
         await editEntry(user, idValue(data.id), integer(data.qty, 0), data.reason, integer(data.expected, 0));

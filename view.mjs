@@ -1,4 +1,4 @@
-import { all, one, workClock, zone } from './model.mjs';
+import { all, one, workClock, zone, closedMonth } from './model.mjs';
 
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -76,18 +76,22 @@ function totals(rows) {
 const orderList = `SELECT b.*, c.order_id closed FROM orders b
   LEFT JOIN completed_orders c ON c.order_id=b.id ORDER BY b.id DESC`;
 
-export async function workerPage(user, month) {
+export async function workerPage(user, month, saved) {
   const { date, mode, sunday, untilChange } = workClock();
-  const [orders, assigned, today, history] = await Promise.all([
+  const [orders, assigned, today, history, off] = await Promise.all([
     all(orderList),
     all(`SELECT o.*, e.id entry_id FROM assignments a JOIN operations o ON o.id=a.operation
       LEFT JOIN entries e ON e.worker=a.worker AND e.operation=o.id AND e.day=?
       WHERE a.worker=? ORDER BY o.name`, date, user.id),
     all(entryQuery + ' WHERE day=? AND worker=? ORDER BY e.id DESC', date, user.id),
     monthEntries(month, user.id),
+    one('SELECT 1 FROM no_work WHERE worker=? AND day=?', user.id, date),
   ]);
   const completed = new Set(orders.filter(order => order.closed).map(order => order.id));
   const active = orders.filter(order => !order.closed);
+  const activeById = new Map(active.map(order => [order.id, order]));
+  const tasks = assigned.filter(operation => activeById.has(operation.order_id));
+  const savedRow = today.find(row => String(row.id) === saved);
   const editable = row => row.day === date && mode !== 'closed' && !completed.has(row.order_id);
   const label = sunday ? 'Yakshanba · dam olish kuni' : {
     entry: 'Kiritish ochiq · 18:00 gacha', edit: 'Faqat tahrirlash · 20:00 gacha', closed: 'Kunlik kiritish yopiq',
@@ -96,32 +100,41 @@ export async function workerPage(user, month) {
   <p>${date} <span class="badge" data-date="${date}" data-work-mode="${mode}" data-until-change="${untilChange}">${label}</span></p></div>
   <section class="cards"><div class="card"><small>BUGUNGI DONA</small><strong>${totals(today).qty}</strong></div>
   <div class="card"><small>BUGUNGI ISHBAY HAQ</small><strong>${money(totals(today).sum)}</strong></div></section>
-  <section class="card"><h2>Jarayonda</h2>${active.length ? active.map(b => `<details class="order"><summary>${escape(b.name)} · ${b.target} dona</summary>
-  ${assigned.filter(o => o.order_id === b.id).map(o => `<div class="operation"><b>${escape(o.name)}</b> · ${money(o.rate)} / dona
-    ${mode === 'entry' && !o.entry_id ? form('/work/add', hidden('operation', o.id) + hidden('day', date) + number('qty', 'Bajarilgan dona'), 'Saqlash') : ''}</div>`).join('')
-    || '<p class="muted">Bu buyurtmada sizga vazifa biriktirilmagan.</p>'}</details>`).join('') : '<p>Buyurtma hali ochilmagan.</p>'}</section>
+  <section class="card" id="today-work"><h2>Bugungi vazifalarim</h2>
+  ${savedRow ? `<p class="badge" role="status">Bugun ${savedRow.qty} dona saqlandi · ${money(savedRow.qty * savedRow.rate)}</p>` : ''}
+  ${off ? '<p class="badge">Bugun ish bo‘lmadi deb belgilangan.</p>' : ''}
+  ${tasks.map(o => `<div class="operation"><b>${escape(activeById.get(o.order_id).name)} · ${escape(o.name)}</b>
+    <p>${money(o.rate)} / dona</p>
+    ${mode === 'entry' && !o.entry_id ? form('/work/add', hidden('operation', o.id) + hidden('day', date) +
+      number('qty', 'Bajarilgan dona') + `<output data-rate="${o.rate}" aria-live="polite"></output>`, 'Saqlash', 'class="quick-entry"')
+      : o.entry_id ? '<span class="badge">Saqlandi</span>' : ''}</div>`).join('') || '<p>Faol vazifa biriktirilmagan.</p>'}
+  ${mode === 'entry' && !today.length && !off ? form('/work/no-work', hidden('day', date), 'Bugun ish bo‘lmadi') : ''}</section>
+  <section class="card"><h2>Jarayonda</h2>${table(['Buyurtma', 'Reja, dona'], active.map(b => [escape(b.name), b.target]))}</section>
   <section class="card"><h2>Tugatildi</h2>${table(['Buyurtma', 'Reja, dona'], orders.filter(b => b.closed).map(b => [escape(b.name), b.target]))}</section>
   <section class="card"><h2>Bugungi yozuvlar</h2>${entryRows(today, editable)}</section>
-  <section class="card"><h2>Oylik tarix</h2>${monthForm(month)}<p><b>${totals(history).qty} dona · ${money(totals(history).sum)}</b></p>
+  <section class="card"><h2>Mening oyligim</h2>${monthForm(month)}<p><b>${escape(month)} · ${totals(history).qty} dona · ${money(totals(history).sum)}</b></p>
   ${entryRows(history, editable)}</section><script defer src="/work.js"></script>`, user);
 }
 
-export async function adminPage(user, month, worker, activation, pageNumber = 1) {
-  const { date } = workClock();
-  const [orders, workers, operations, assignments, rows, today, audit] = await Promise.all([
+export async function adminPage(user, month, worker, activation, pageNumber = 1, filters = {}) {
+  const { date, sunday } = workClock();
+  const [orders, workers, operations, assignments, rows, today, audit, off, locked, monthAudit] = await Promise.all([
     all(orderList),
-    all(`SELECT p.id, p.login, p.name, EXISTS(SELECT 1 FROM passkeys k WHERE k.person=p.id) ready
-      FROM people p WHERE p.role='worker' ORDER BY p.name`),
+    all(`SELECT p.id, p.login, p.name, g.brigade, EXISTS(SELECT 1 FROM passkeys k WHERE k.person=p.id) ready
+      FROM people p LEFT JOIN worker_brigades g ON g.worker=p.id WHERE p.role='worker' ORDER BY p.name`),
     all(`SELECT o.*, b.name order_name, b.target, COALESCE(SUM(e.qty),0) done
       FROM operations o JOIN orders b ON b.id=o.order_id LEFT JOIN entries e ON e.operation=o.id
       GROUP BY o.id ORDER BY b.id DESC,o.name`),
     all(`SELECT a.*, p.name FROM assignments a JOIN people p ON p.id=a.worker ORDER BY p.name`),
     monthEntries(month, worker),
-    all('SELECT DISTINCT worker FROM entries WHERE day=?', date),
+    all('SELECT DISTINCT e.worker, o.order_id FROM entries e JOIN operations o ON o.id=e.operation WHERE e.day=?', date),
     all(`SELECT a.*, p.name actor_name, w.name worker_name, e.day, o.name operation_name, b.name order_name
       FROM audit a JOIN people p ON p.id=a.actor JOIN entries e ON e.id=a.entry JOIN people w ON w.id=e.worker
       JOIN operations o ON o.id=e.operation JOIN orders b ON b.id=o.order_id
       WHERE e.day>=? AND e.day<? AND (? IS NULL OR e.worker=?) ORDER BY a.id DESC`, month + "-01", month + "-32", worker, worker),
+    all('SELECT worker FROM no_work WHERE day=?', date),
+    closedMonth(month),
+    all(`SELECT a.*, p.name FROM month_audit a JOIN people p ON p.id=a.actor WHERE a.month=? ORDER BY a.id DESC`, month),
   ]);
   const active = orders.filter(order => !order.closed);
   const completed = orders.filter(order => order.closed);
@@ -138,6 +151,15 @@ export async function adminPage(user, month, worker, activation, pageNumber = 1)
     }
   }
   const sent = new Set(today.map(row => row.worker));
+  const offIds = new Set(off.map(row => row.worker));
+  const relevantOperations = new Set(activeOperations.filter(o => !filters.order || o.order_id === filters.order).map(o => o.id));
+  const expected = new Set(assignments.filter(a => relevantOperations.has(a.operation)).map(a => a.worker));
+  const submitted = new Set(today.filter(row => !filters.order || row.order_id === filters.order).map(row => row.worker));
+  const roster = workers.filter(w => expected.has(w.id) && (!filters.brigade || w.brigade === filters.brigade));
+  const missing = roster.filter(w => !submitted.has(w.id) && !offIds.has(w.id));
+  const brigades = [...new Set(workers.map(w => w.brigade).filter(Boolean))].sort();
+  const filterOption = (value, title, selected) =>
+    `<option value="${escape(value)}"${selected ? ' selected' : ''}>${escape(title)}</option>`;
   const pageCount = Math.max(1, Math.ceil(Math.max(rows.length, audit.length) / 100));
   const current = Math.min(pageCount, Math.max(1, pageNumber));
   const show = list => list.slice((current - 1) * 100, current * 100);
@@ -146,18 +168,27 @@ export async function adminPage(user, month, worker, activation, pageNumber = 1)
   const paging = pageCount > 1 ? `<p>${current > 1 ? pageLink(current - 1, 'Oldingi') + ' · ' : ''}Sahifa ${current} / ${pageCount}${current < pageCount ? ' · ' + pageLink(current + 1, 'Keyingi') : ''}</p>` : '';
   const workerOptions = workers.map(w => option(w.id, w.name + ' · ' + w.login)).join('');
   return page('Admin kabineti', `<div class="heading"><p class="eyebrow">ADMIN KABINETI · ${date}</p><h1>Ishlab chiqarish nazorati</h1>
-  <nav><a href="#orders">Buyurtmalar</a><a href="#workers">Ishchilar</a><a href="#report">Hisobot</a><a href="#audit">Tahrirlar</a></nav></div>
+  <nav><a href="#today-check">Bugungi nazorat</a><a href="#orders">Buyurtmalar</a><a href="#workers">Ishchilar</a><a href="#report">Hisobot</a><a href="#audit">Tahrirlar</a></nav></div>
   <section class="cards"><div class="card"><small>ISHCHILAR</small><strong>${workers.length}</strong></div>
   <div class="card"><small>BUGUN KIRITGAN</small><strong>${sent.size}</strong></div>
   <div class="card"><small>BUYURTMALAR</small><strong>${orders.length}</strong></div></section>
   ${activation ? `<section class="card"><h2>Bir martalik kod</h2><p>${escape(activation.login)} · <code>${escape(activation.code)}</code></p>
   <p>Kodni ishchining o‘ziga bering. 24 soat amal qiladi.</p></section>` : ''}
+  <section class="card" id="today-check"><h2>Bugun kim kiritmadi?</h2>
+  <form method="get" action="/#today-check" class="inline">
+  <label>Brigada<select name="brigade"><option value="">Barchasi</option>${brigades.map(g => filterOption(g, g, filters.brigade === g)).join('')}</select></label>
+  <label>Buyurtma<select name="todayOrder"><option value="">Barchasi</option>${active.map(o => filterOption(o.id, o.name, filters.order === o.id)).join('')}</select></label>
+  <button>Filtrlash</button></form>
+  ${sunday ? '<p>Yakshanba · dam olish kuni.</p>' : `<p>${roster.length} ishchi · ${roster.filter(w => submitted.has(w.id)).length} kiritdi ·
+    ${roster.filter(w => offIds.has(w.id)).length} ish bo‘lmadi · <b>${missing.length} kiritmadi</b></p>
+    ${table(['Ishchi', 'ID', 'Brigada'], missing.map(w => [escape(w.name), escape(w.login), escape(w.brigade || '—')]))}`}</section>
   <section class="card" id="orders"><h2>Jarayonda</h2>
   <div class="split"><div><h3>Buyurtma ochish</h3>${form('/admin/order', input('name', 'Buyurtma nomi') + number('target', 'Reja, dona'), 'Buyurtma yaratish')}</div>
   <div><h3>Operatsiya ochish</h3>${active.length ? form('/admin/operation', `<label>Buyurtma<select name="order">${active.map(b => option(b.id, b.name)).join('')}</select></label>` +
   input('name', 'Operatsiya nomi') + number('rate', 'Donabay narx, so‘m', '', 1, 100000000), 'Operatsiya yaratish') : '<p>Avval buyurtma oching.</p>'}</div></div>
   ${table(['Buyurtma / operatsiya', 'Bajarildi / reja', 'Tarif', 'Biriktirilgan ishchilar'],
-  activeOperations.map(o => [escape(o.order_name) + ' / ' + escape(o.name), o.done + ' / ' + o.target,
+  activeOperations.map(o => [escape(o.order_name) + ' / ' + escape(o.name),
+    `<progress aria-label="Bajarilgan dona" value="${Math.min(o.done, o.target)}" max="${o.target}"></progress> ${o.done} / ${o.target}`,
     `<details><summary>${money(o.rate)}</summary>${form('/admin/rate', hidden('operation', o.id) + number('rate', 'Yangi tarif', o.rate, 1, 100000000), 'Tarifni saqlash')}</details>`,
     assignments.filter(a => a.operation === o.id).map(a => escape(a.name) + form('/admin/unassign', hidden('worker', a.worker) + hidden('operation', a.operation), 'Ajratish', 'class="small"')).join('<br>') || '—']))}
   ${workers.length && activeOperations.length ? form('/admin/assign', `<label>Ishchi<select name="worker">${workerOptions}</select></label>
@@ -169,16 +200,25 @@ export async function adminPage(user, month, worker, activation, pageNumber = 1)
     operations.filter(o => o.order_id === b.id).map(o => escape(o.name) + ' · ' + o.done + ' dona').join('<br>') || '—']))}</section>
   <section class="card" id="workers"><h2>Ishchilar</h2>
   ${form('/admin/worker', input('login', 'Ishchi ID', 'required maxlength="40" placeholder="Muqaddam1987"') + input('name', 'Ism va familiya'), 'Ishchi yaratish', 'class="inline"')}
-  ${table(['Ishchi', 'ID', 'Kirish kaliti', 'Bugungi yozuv', 'Telefon almashtirish'], workers.map(w => [
-    escape(w.name), escape(w.login), w.ready ? 'Faol' : 'Faollashtirilmagan', sent.has(w.id) ? 'Kiritilgan' : '—',
+  ${table(['Ishchi', 'ID', 'Brigada', 'Kirish kaliti', 'Bugungi yozuv', 'Telefon almashtirish'], workers.map(w => [
+    escape(w.name), escape(w.login), `<details><summary>${escape(w.brigade || 'Brigada tanlanmagan')}</summary>
+    ${form('/admin/brigade', hidden('worker', w.id) + input('brigade', 'Brigada nomi', `maxlength="80" value="${escape(w.brigade)}"`), 'Saqlash')}</details>`,
+    w.ready ? 'Faol' : 'Faollashtirilmagan', sent.has(w.id) ? 'Kiritilgan' : offIds.has(w.id) ? 'Ish bo‘lmadi' : '—',
     `<details><summary>Yangi kod</summary><p>Eski kalit va seanslar bekor qilinadi.</p>${form('/admin/reset', hidden('worker', w.id), 'Yangi kod berish')}</details>`]))}</section>
   <section class="card" id="report"><h2>Oylik hisobot</h2>
   <form method="get" action="/#report" class="inline">${input('month', 'Oy', `type="month" value="${month}" required`)}
   <label>Ishchi<select name="worker"><option value="">Barchasi</option>${workers.map(w => `<option value="${w.id}" ${w.id === worker ? 'selected' : ''}>${escape(w.name)} · ${escape(w.login)}</option>`).join('')}</select></label><button>Ko‘rish</button></form>
   <p><a href="/admin/export?${report}">Excel uchun CSV yuklash</a></p>
+  <p><span class="badge">${locked ? 'Oy yopilgan' : 'Oy ochiq'}</span></p>
+  ${locked ? form('/admin/month/reopen', hidden('month', month) + input('reason', 'Qayta ochish sababi', 'required maxlength="500"'), 'Oyni qayta ochish')
+    : month < date.slice(0, 7) ? `<details><summary>Oy hisobini yopish</summary><p>Yopilgan oyning yozuvlari tahrir uchun bloklanadi.</p>
+      ${form('/admin/month/close', hidden('month', month), 'Oyni yopish')}</details>` : ''}
+  ${monthAudit.length ? table(['Vaqt', 'Kim', 'Amal', 'Sabab'], monthAudit.map(a => [
+    escape(auditClock.format(new Date(a.at))), escape(a.name), a.action === 'close' ? 'Yopildi' : 'Qayta ochildi', escape(a.reason || '—'),
+  ])) : ''}
   <h3>Oy bo‘yicha jami</h3>${table(['Ishchi', 'Jami dona', 'Jami haq'], [...monthly.values()].map(r => [escape(r.name), r.qty, money(r.amount)]))}
   <h3>Kun bo‘yicha jami</h3>${table(['Sana', 'Ishchi', 'Dona', 'Summa'], [...daily.values()].map(r => [escape(r.day), escape(r.name), r.qty, money(r.amount)]))}
-  <h3>Barcha yozuvlar</h3>${paging}${entryRows(show(rows), () => true, month, true)}</section>
+  <h3>Barcha yozuvlar</h3>${paging}${entryRows(show(rows), () => !locked, month, true)}</section>
   <section class="card" id="audit"><h2>Tahrirlar tarixi</h2>${table(['Vaqt', 'Ish sanasi', 'Ishchi', 'Buyurtma / operatsiya', 'Kim', 'Dona', 'Sabab'], show(audit).map(r =>
     [escape(auditClock.format(new Date(r.at))),
     escape(r.day), escape(r.worker_name), escape(r.order_name) + ' / ' + escape(r.operation_name), escape(r.actor_name), r.old_qty + ' → ' + r.new_qty, escape(r.reason)]))}</section>`, user);

@@ -111,3 +111,12 @@ Sinovlar vaqt chegaralari, yakshanba, ishchi huquqlari, takroriy yozuv, tahrir s
 Netlify Function ham mahalliy libSQL bilan HTTPS so‘rovlari, imzoli passkey va hisobot bo‘yicha sinovdan o‘tkaziladi. Bu sinov jonli Netlify yoki Turso hisobidan foydalanmaydi.
 
 
+
+## Kundalik nazorat va oy yakuni
+
+- Ishchi **Bugungi vazifalarim** bo‘limida faol vazifalariga dona kiritadi. Kiritish paytida taxminiy haq, saqlagach esa yozuvning haqiqiy summasi ko‘rinadi.
+- Ishchi 06:00–18:00 da **Bugun ish bo‘lmadi** belgisini qo‘yishi mumkin. Keyin o‘sha kuni dona saqlansa, belgi avtomatik olib tashlanadi.
+- Admin **Ishchilar** ro‘yxatida brigada nomini belgilaydi. **Bugun kim kiritmadi?** bo‘limi ochiq buyurtmaga biriktirilgan ishchilarni kuzatadi va brigada hamda buyurtma bo‘yicha filtrlaydi.
+- **Jarayonda** bo‘limidagi chiziq operatsiyaning bajarilgan donasini rejaga solishtiradi.
+- **Oylik hisobot**da admin tugagan oyni yopishi mumkin. Tuzatish uchun oy sabab bilan qayta ochiladi. Yopish va qayta ochish tarixi saqlanadi. Tuzatish tugagach, oyni yana yoping.
+- GitHub orqali yangilashda app.mjs, model.mjs, view.mjs, work.js va style.css fayllarini birga almashtiring. Yangi jadvallar mavjud Turso bazasida avtomatik ochiladi.

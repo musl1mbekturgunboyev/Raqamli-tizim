@@ -3,7 +3,16 @@ let edited = false;
 let timer;
 let lastCheck = 0;
 function schedule(ms) { clearTimeout(timer); timer = setTimeout(checkClock, ms + 500); }
-document.addEventListener('input', () => { edited = true; });
+const amountFormat = new Intl.NumberFormat('uz-UZ');
+document.addEventListener('input', event => {
+  edited = true;
+  const field = event.target;
+  if (!field.matches('.quick-entry input[name="qty"]')) return;
+  const output = field.form.querySelector('output');
+  output.value = field.value && field.validity.valid
+    ? 'Hisoblanadigan haq · ' + amountFormat.format(Number(field.value) * Number(output.dataset.rate)) + ' so‘m'
+    : '';
+});
 async function checkClock() {
   if (Date.now() - lastCheck < 1500) return;
   lastCheck = Date.now();
