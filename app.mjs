@@ -28,11 +28,12 @@ export function createApp(appOrigin, asset = () => null) {
   }
 
   async function signIn(req, res, id) {
+    const sessionSeconds = 30 * 24 * 3600;
     const token = random();
     const old = cookie(req, sessionCookie);
     if (old) await run('DELETE FROM sessions WHERE token=?', digest(old));
-    await run('INSERT INTO sessions VALUES(?,?,?)', digest(token), id, Date.now() + 8 * 3600000);
-    setCookie(res, sessionCookie, token, 8 * 3600);
+    await run('INSERT INTO sessions VALUES(?,?,?)', digest(token), id, Date.now() + sessionSeconds * 1000);
+    setCookie(res, sessionCookie, token, sessionSeconds);
   }
 
   function limit(key, max) {
@@ -193,12 +194,17 @@ export function createApp(appOrigin, asset = () => null) {
     }
     if (path === '/admin/order') {
       await run('INSERT INTO orders(name,target) VALUES(?,?)', clean(data.name), integer(data.target));
+    } else if (path === '/admin/order/complete') {
+      await run(`INSERT OR IGNORE INTO completed_orders(order_id)
+        SELECT id FROM orders WHERE id=?`, idValue(data.order));
+      return redirect(res, '/#completed-orders');
     } else if (path === '/admin/operation') {
       const order = idValue(data.order);
       const name = clean(data.name);
-      need(await one('SELECT id FROM orders WHERE id=?', order), 'Buyurtma topilmadi.');
-      need(!(await one('SELECT id FROM operations WHERE order_id=? AND name=?', order, name)), 'Bu operatsiya mavjud.');
-      await run('INSERT INTO operations(order_id,name,rate) VALUES(?,?,?)', order, name, integer(data.rate, 1, 100000000));
+      const result = await run(`INSERT OR IGNORE INTO operations(order_id,name,rate)
+        SELECT id,?,? FROM orders WHERE id=? AND id NOT IN (SELECT order_id FROM completed_orders)`,
+        name, integer(data.rate, 1, 100000000), order);
+      need(result.changes === 1, 'Buyurtma yopilgan, topilmadi yoki bu operatsiya mavjud.');
     } else if (path === '/admin/rate') {
       await run('UPDATE operations SET rate=? WHERE id=?', integer(data.rate, 1, 100000000), idValue(data.operation));
     } else if (path === '/admin/assign' || path === '/admin/unassign') {

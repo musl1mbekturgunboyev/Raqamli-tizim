@@ -52,7 +52,7 @@ function entryRows(rows, editable, month = '', admin = false) {
       escape(r.order_name) + ' / ' + escape(r.operation_name), r.qty, money(r.rate), money(r.qty * r.rate),
       editable(r) ? editForm(r, admin, month) : 'Yopiq']));
 }
-const entryQuery = `SELECT e.*, p.name worker_name, p.login worker_login, b.name order_name, o.name operation_name
+const entryQuery = `SELECT e.*, o.order_id, p.name worker_name, p.login worker_login, b.name order_name, o.name operation_name
   FROM entries e JOIN people p ON p.id=e.worker JOIN operations o ON o.id=e.operation
   JOIN orders b ON b.id=o.order_id`;
 export async function monthEntries(month, worker) {
@@ -73,16 +73,22 @@ function totals(rows) {
   return rows.reduce((t, row) => ({ qty: t.qty + row.qty, sum: t.sum + BigInt(row.qty * row.rate) }), { qty: 0, sum: 0n });
 }
 
+const orderList = `SELECT b.*, c.order_id closed FROM orders b
+  LEFT JOIN completed_orders c ON c.order_id=b.id ORDER BY b.id DESC`;
+
 export async function workerPage(user, month) {
   const { date, mode, sunday, untilChange } = workClock();
   const [orders, assigned, today, history] = await Promise.all([
-    all('SELECT * FROM orders ORDER BY id DESC'),
+    all(orderList),
     all(`SELECT o.*, e.id entry_id FROM assignments a JOIN operations o ON o.id=a.operation
       LEFT JOIN entries e ON e.worker=a.worker AND e.operation=o.id AND e.day=?
       WHERE a.worker=? ORDER BY o.name`, date, user.id),
     all(entryQuery + ' WHERE day=? AND worker=? ORDER BY e.id DESC', date, user.id),
     monthEntries(month, user.id),
   ]);
+  const completed = new Set(orders.filter(order => order.closed).map(order => order.id));
+  const active = orders.filter(order => !order.closed);
+  const editable = row => row.day === date && mode !== 'closed' && !completed.has(row.order_id);
   const label = sunday ? 'Yakshanba · dam olish kuni' : {
     entry: 'Kiritish ochiq · 18:00 gacha', edit: 'Faqat tahrirlash · 20:00 gacha', closed: 'Kunlik kiritish yopiq',
   }[mode];
@@ -90,19 +96,20 @@ export async function workerPage(user, month) {
   <p>${date} <span class="badge" data-date="${date}" data-work-mode="${mode}" data-until-change="${untilChange}">${label}</span></p></div>
   <section class="cards"><div class="card"><small>BUGUNGI DONA</small><strong>${totals(today).qty}</strong></div>
   <div class="card"><small>BUGUNGI ISHBAY HAQ</small><strong>${money(totals(today).sum)}</strong></div></section>
-  <section class="card"><h2>Buyurtmalar</h2>${orders.length ? orders.map(b => `<details class="order"><summary>${escape(b.name)} · ${b.target} dona</summary>
+  <section class="card"><h2>Jarayonda</h2>${active.length ? active.map(b => `<details class="order"><summary>${escape(b.name)} · ${b.target} dona</summary>
   ${assigned.filter(o => o.order_id === b.id).map(o => `<div class="operation"><b>${escape(o.name)}</b> · ${money(o.rate)} / dona
     ${mode === 'entry' && !o.entry_id ? form('/work/add', hidden('operation', o.id) + hidden('day', date) + number('qty', 'Bajarilgan dona'), 'Saqlash') : ''}</div>`).join('')
     || '<p class="muted">Bu buyurtmada sizga vazifa biriktirilmagan.</p>'}</details>`).join('') : '<p>Buyurtma hali ochilmagan.</p>'}</section>
-  <section class="card"><h2>Bugungi yozuvlar</h2>${entryRows(today, () => mode !== 'closed')}</section>
+  <section class="card"><h2>Tugatildi</h2>${table(['Buyurtma', 'Reja, dona'], orders.filter(b => b.closed).map(b => [escape(b.name), b.target]))}</section>
+  <section class="card"><h2>Bugungi yozuvlar</h2>${entryRows(today, editable)}</section>
   <section class="card"><h2>Oylik tarix</h2>${monthForm(month)}<p><b>${totals(history).qty} dona · ${money(totals(history).sum)}</b></p>
-  ${entryRows(history, row => row.day === date && mode !== 'closed')}</section><script defer src="/work.js"></script>`, user);
+  ${entryRows(history, editable)}</section><script defer src="/work.js"></script>`, user);
 }
 
 export async function adminPage(user, month, worker, activation, pageNumber = 1) {
   const { date } = workClock();
   const [orders, workers, operations, assignments, rows, today, audit] = await Promise.all([
-    all('SELECT * FROM orders ORDER BY id DESC'),
+    all(orderList),
     all(`SELECT p.id, p.login, p.name, EXISTS(SELECT 1 FROM passkeys k WHERE k.person=p.id) ready
       FROM people p WHERE p.role='worker' ORDER BY p.name`),
     all(`SELECT o.*, b.name order_name, b.target, COALESCE(SUM(e.qty),0) done
@@ -116,6 +123,10 @@ export async function adminPage(user, month, worker, activation, pageNumber = 1)
       JOIN operations o ON o.id=e.operation JOIN orders b ON b.id=o.order_id
       WHERE e.day>=? AND e.day<? AND (? IS NULL OR e.worker=?) ORDER BY a.id DESC`, month + "-01", month + "-32", worker, worker),
   ]);
+  const active = orders.filter(order => !order.closed);
+  const completed = orders.filter(order => order.closed);
+  const activeIds = new Set(active.map(order => order.id));
+  const activeOperations = operations.filter(operation => activeIds.has(operation.order_id));
   const daily = new Map();
   const monthly = new Map();
   for (const r of rows) {
@@ -141,16 +152,21 @@ export async function adminPage(user, month, worker, activation, pageNumber = 1)
   <div class="card"><small>BUYURTMALAR</small><strong>${orders.length}</strong></div></section>
   ${activation ? `<section class="card"><h2>Bir martalik kod</h2><p>${escape(activation.login)} · <code>${escape(activation.code)}</code></p>
   <p>Kodni ishchining o‘ziga bering. 24 soat amal qiladi.</p></section>` : ''}
-  <section class="card" id="orders"><h2>Buyurtmalar va vazifalar</h2>
+  <section class="card" id="orders"><h2>Jarayonda</h2>
   <div class="split"><div><h3>Buyurtma ochish</h3>${form('/admin/order', input('name', 'Buyurtma nomi') + number('target', 'Reja, dona'), 'Buyurtma yaratish')}</div>
-  <div><h3>Operatsiya ochish</h3>${orders.length ? form('/admin/operation', `<label>Buyurtma<select name="order">${orders.map(b => option(b.id, b.name)).join('')}</select></label>` +
+  <div><h3>Operatsiya ochish</h3>${active.length ? form('/admin/operation', `<label>Buyurtma<select name="order">${active.map(b => option(b.id, b.name)).join('')}</select></label>` +
   input('name', 'Operatsiya nomi') + number('rate', 'Donabay narx, so‘m', '', 1, 100000000), 'Operatsiya yaratish') : '<p>Avval buyurtma oching.</p>'}</div></div>
   ${table(['Buyurtma / operatsiya', 'Bajarildi / reja', 'Tarif', 'Biriktirilgan ishchilar'],
-  operations.map(o => [escape(o.order_name) + ' / ' + escape(o.name), o.done + ' / ' + o.target,
+  activeOperations.map(o => [escape(o.order_name) + ' / ' + escape(o.name), o.done + ' / ' + o.target,
     `<details><summary>${money(o.rate)}</summary>${form('/admin/rate', hidden('operation', o.id) + number('rate', 'Yangi tarif', o.rate, 1, 100000000), 'Tarifni saqlash')}</details>`,
     assignments.filter(a => a.operation === o.id).map(a => escape(a.name) + form('/admin/unassign', hidden('worker', a.worker) + hidden('operation', a.operation), 'Ajratish', 'class="small"')).join('<br>') || '—']))}
-  ${workers.length && operations.length ? form('/admin/assign', `<label>Ishchi<select name="worker">${workerOptions}</select></label>
-  <label>Operatsiya<select name="operation">${operations.map(o => option(o.id, o.order_name + ' / ' + o.name)).join('')}</select></label>`, 'Vazifani biriktirish', 'class="inline"') : ''}</section>
+  ${workers.length && activeOperations.length ? form('/admin/assign', `<label>Ishchi<select name="worker">${workerOptions}</select></label>
+  <label>Operatsiya<select name="operation">${activeOperations.map(o => option(o.id, o.order_name + ' / ' + o.name)).join('')}</select></label>`, 'Vazifani biriktirish', 'class="inline"') : ''}
+  ${table(['Buyurtma', 'Reja, dona', 'Amal'], active.map(b => [escape(b.name), b.target,
+    `<details><summary>Yopish</summary><p>Ishchilar bu buyurtmaga boshqa yozuv kirita olmaydi.</p>${form('/admin/order/complete', hidden('order', b.id), 'Tugatildi deb belgilash')}</details>`]))}</section>
+  <section class="card" id="completed-orders"><h2>Tugatildi</h2>
+  ${table(['Buyurtma', 'Reja, dona', 'Operatsiyalar'], completed.map(b => [escape(b.name), b.target,
+    operations.filter(o => o.order_id === b.id).map(o => escape(o.name) + ' · ' + o.done + ' dona').join('<br>') || '—']))}</section>
   <section class="card" id="workers"><h2>Ishchilar</h2>
   ${form('/admin/worker', input('login', 'Ishchi ID', 'required maxlength="40" placeholder="Muqaddam1987"') + input('name', 'Ism va familiya'), 'Ishchi yaratish', 'class="inline"')}
   ${table(['Ishchi', 'ID', 'Kirish kaliti', 'Bugungi yozuv', 'Telefon almashtirish'], workers.map(w => [

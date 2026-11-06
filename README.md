@@ -70,6 +70,10 @@ Brauzerda http://localhost:3000 manzilini oching. **Admin kirishi**ni tanlang va
 4. Ishchi kirish sahifasida o‘z IDsi va kodini kiritib, telefonning kirish kalitini sozlaydi. Keyingi kirishda ID va qurilma tasdig‘i ishlatiladi.
 5. Telefon yo‘qolsa yoki almashsa, ishchi qatorida **Yangi kod**ni bosing. Eski kalit va faol seanslar bekor qilinadi.
 
+## Buyurtmani yopish
+
+Admin Jarayonda bo‘limida Yopish tugmasini bosadi va buyurtmani Tugatildi deb belgilaydi. Ishchilarda yangi yozuv va tahrir yopiladi, avvalgi yozuvlar hisobotda qoladi.
+
 ## Ish vaqti va hisoblash
 
 - Standart vaqt mintaqasi `Asia/Tashkent`. Korxona boshqa mintaqada bo‘lsa, serverni ishga tushirishdan oldin `WORK_TIME_ZONE` ni o‘rnating.
@@ -93,7 +97,7 @@ Brauzerda http://localhost:3000 manzilini oching. **Admin kirishi**ni tanlang va
 
 Faollashtirishdan oldin haqiqiy HTTPS domenini tanlang. Kirish kalitlari domen bilan bog‘langan. Reverse proxy HTTPS so‘rovlarini Node portiga yo‘naltirsin. Doimiy zaxira uchun serverni to‘xtatib, `data` papkasini yoki sozlangan SQLite fayli va uning yon fayllarini nusxalang. Serverni qayta ishga tushirganda davomiy ma’lumot uchun shu diskni ulang.
 
-Telefon tasdig‘ini qurilma bajaradi. iPhone Face ID yoki Touch ID ishlatishi mumkin. Qurilma va brauzerga qarab PIN ham ishlatiladi. Server yuz suratini saqlamaydi. Har yangi kirishda tasdiq so‘raladi. Kirgan seans 8 soatgacha amal qiladi yoki **Chiqish** bosilganda tugaydi.
+Telefon tasdig‘ini qurilma bajaradi. iPhone Face ID yoki Touch ID ishlatishi mumkin. Qurilma va brauzerga qarab PIN ham ishlatiladi. Server yuz suratini saqlamaydi. Har yangi kirishda tasdiq so‘raladi. Kirgan seans shu brauzerda 30 kungacha amal qiladi yoki **Chiqish** bosilganda tugaydi.
 
 ## Sinov
 
@@ -105,4 +109,5 @@ Sinovlar vaqt chegaralari, yakshanba, ishchi huquqlari, takroriy yozuv, tahrir s
 
 
 Netlify Function ham mahalliy libSQL bilan HTTPS so‘rovlari, imzoli passkey va hisobot bo‘yicha sinovdan o‘tkaziladi. Bu sinov jonli Netlify yoki Turso hisobidan foydalanmaydi.
+
 

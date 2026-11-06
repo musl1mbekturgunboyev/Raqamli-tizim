@@ -37,6 +37,9 @@ CREATE INDEX IF NOT EXISTS challenge_expiration ON auth_challenges(expires);
 CREATE TABLE IF NOT EXISTS orders (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, target INTEGER NOT NULL CHECK(target > 0)
 );
+CREATE TABLE IF NOT EXISTS completed_orders (
+  order_id INTEGER PRIMARY KEY REFERENCES orders
+);
 CREATE TABLE IF NOT EXISTS operations (
   id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders, name TEXT NOT NULL,
   rate INTEGER NOT NULL CHECK(rate > 0), UNIQUE(order_id, name)
@@ -111,9 +114,11 @@ export async function createEntry(worker, operation, qty, now = new Date()) {
   need(mode === 'entry', 'Yangi yozuv faqat ish kunlari 06:00–18:00 oralig‘ida kiritiladi.');
   need(Number.isInteger(qty) && qty > 0 && qty <= 1_000_000, 'Dona soni 1–1000000 oralig‘ida bo‘lsin.');
   return await transaction(async () => {
-    const assigned = await one(`SELECT o.rate FROM assignments a JOIN operations o ON o.id=a.operation
+    const assigned = await one(`SELECT o.rate, c.order_id closed FROM assignments a JOIN operations o ON o.id=a.operation
+      LEFT JOIN completed_orders c ON c.order_id=o.order_id
       WHERE a.worker=? AND a.operation=?`, worker, operation);
     need(assigned, 'Bu operatsiya sizga biriktirilmagan.');
+    need(!assigned.closed, 'Buyurtma tugatilgan.');
     const result = await run(`INSERT INTO entries(worker,operation,day,qty,rate) VALUES(?,?,?,?,?)
       ON CONFLICT(worker,operation,day) DO NOTHING`, worker, operation, date, qty, assigned.rate);
     need(result.changes === 1, 'Bugungi yozuv mavjud. Tahrirlash bo‘limidan foydalaning.');
@@ -126,9 +131,11 @@ export async function editEntry(person, id, qty, reason, expectedQty, now = new 
   need(Number.isInteger(qty) && qty >= 0 && qty <= 1_000_000, 'Dona soni 0–1000000 oralig‘ida bo‘lsin.');
   const { date, mode } = workClock(now);
   await transaction(async () => {
-    const row = await one('SELECT * FROM entries WHERE id=?', id);
+    const row = await one(`SELECT e.*, c.order_id closed FROM entries e JOIN operations o ON o.id=e.operation
+      LEFT JOIN completed_orders c ON c.order_id=o.order_id WHERE e.id=?`, id);
     need(row && (person.role === 'admin' || person.id === row.worker), 'Yozuv topilmadi.');
     need(person.role === 'admin' || (row.day === date && mode !== 'closed'), 'Bu kun yopilgan.');
+    need(person.role === 'admin' || !row.closed, 'Buyurtma tugatilgan.');
     need(expectedQty === row.qty, 'Yozuv yangilangan. Sahifani qayta ochib tekshiring.');
     need(qty !== row.qty, 'Yangi dona soni avvalgisidan farq qilishi kerak.');
     await run('UPDATE entries SET qty=? WHERE id=?', qty, id);

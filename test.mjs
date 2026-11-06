@@ -55,6 +55,9 @@ test('Dona, tarif, takroriy yozuv, maxfiylik va tahrir tarixi', async () => {
   assert.equal((await one('SELECT qty*rate total FROM entries')).total, 11700);
   assert.equal((await one('SELECT COUNT(*) count FROM audit')).count, 2);
   assert.equal((await one('SELECT reason FROM audit ORDER BY id DESC LIMIT 1')).reason, 'Brigadir sanadi');
+  await run('INSERT INTO completed_orders VALUES(1)');
+  await assert.rejects(() => createEntry(1, 1, 25, date('17:59')), /Buyurtma tugatilgan/);
+  await assert.rejects(() => editEntry(worker, id, 28, 'Tuzatish', 26, date('19:59')), /Buyurtma tugatilgan/);
 });
 
 async function loginFlow(t, netlify = false) {
@@ -129,8 +132,11 @@ async function loginFlow(t, netlify = false) {
   }
   const admin = client();
   const worker = client();
+  assert.equal((await admin('/admin/login')).headers.get('referrer-policy'), 'same-origin');
   if (!netlify) assert.equal((await worker('/passkey-lib.js')).status, 200);
-  assert.equal((await admin('/admin/login', { login: 'boshliq', password: 'Test-password-123' })).status, 303);
+  const adminLogin = await admin('/admin/login', { login: 'boshliq', password: 'Test-password-123' });
+  assert.equal(adminLogin.status, 303);
+  assert.match(adminLogin.headers.get('set-cookie'), /Max-Age=2592000/);
   const login = 'Muqaddam1987';
   const created = await admin('/admin/worker', { login, name: 'Muqaddam' });
   assert.equal(created.status, 200);
@@ -178,6 +184,14 @@ async function loginFlow(t, netlify = false) {
   assert.equal(verified.status, 200, await verified.text());
   const report = await admin('/admin/export?month=2026-11');
   assert.match(await report.text(), /7650/);
+  assert.match(verified.headers.get('set-cookie'), /Max-Age=2592000/);
+  assert.equal((await worker('/admin/order/complete', { order: 1 })).status, 403);
+  assert.equal((await admin('/admin/order/complete', { order: 1 })).headers.get('location'), '/#completed-orders');
+  for (const account of [admin, worker]) {
+    const html = await (await account('/')).text();
+    assert.match(html, /<h2>Tugatildi<\/h2>.*?Oq ko‘ylak/s);
+    assert.doesNotMatch(html.split('<h2>Tugatildi</h2>')[0], /Oq ko‘ylak/);
+  }
   const workerId = [...adminHtml.matchAll(/<option value="(\d+)"[^>]*>Muqaddam · ([^<]+)<\/option>/g)]
     .find(match => match[2] === login)[1];
   const reset = await admin('/admin/reset', { worker: workerId });
