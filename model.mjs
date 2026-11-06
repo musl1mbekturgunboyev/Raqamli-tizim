@@ -43,6 +43,9 @@ CREATE TABLE IF NOT EXISTS completed_orders (
 CREATE TABLE IF NOT EXISTS worker_brigades (
   worker INTEGER PRIMARY KEY REFERENCES people, brigade TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS worker_jobs (
+  worker INTEGER PRIMARY KEY REFERENCES people, job TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS no_work (
   worker INTEGER NOT NULL REFERENCES people, day TEXT NOT NULL, PRIMARY KEY(worker,day)
 );
@@ -133,11 +136,28 @@ export function loginId(value) {
   need(/^[a-z0-9_-]{3,40}$/i.test(id), 'ID 3–40 ta lotin harfi, raqam, tire yoki pastki chiziqdan iborat bo‘lsin.');
   return id;
 }
+export function newActivation() {
+  return { code: random(12), expires: Date.now() + 86400000 };
+}
+
+export async function saveWorkerGrouping(worker, { brigade, job }) {
+  if (brigade !== undefined) {
+    if (brigade) await run(`INSERT INTO worker_brigades VALUES(?,?)
+      ON CONFLICT(worker) DO UPDATE SET brigade=excluded.brigade`, worker, brigade);
+    else await run('DELETE FROM worker_brigades WHERE worker=?', worker);
+  }
+  if (job !== undefined) {
+    if (job) await run(`INSERT INTO worker_jobs VALUES(?,?)
+      ON CONFLICT(worker) DO UPDATE SET job=excluded.job`, worker, job);
+    else await run('DELETE FROM worker_jobs WHERE worker=?', worker);
+  }
+}
+
 export async function activate(worker) {
-  const code = random(12);
+  const { code, expires } = newActivation();
   await transaction(async () => {
     await run('UPDATE people SET activation=?, activation_until=? WHERE id=? AND role=?',
-      digest(code), Date.now() + 86400000, worker, 'worker');
+      digest(code), expires, worker, 'worker');
     await run('DELETE FROM passkeys WHERE person=?', worker);
     await run('DELETE FROM sessions WHERE person=?', worker);
   });

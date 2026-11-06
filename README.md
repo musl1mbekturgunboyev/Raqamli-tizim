@@ -120,3 +120,9 @@ Netlify Function ham mahalliy libSQL bilan HTTPS so‘rovlari, imzoli passkey va
 - **Jarayonda** bo‘limidagi chiziq operatsiyaning bajarilgan donasini rejaga solishtiradi.
 - **Oylik hisobot**da admin tugagan oyni yopishi mumkin. Tuzatish uchun oy sabab bilan qayta ochiladi. Yopish va qayta ochish tarixi saqlanadi. Tuzatish tugagach, oyni yana yoping.
 - GitHub orqali yangilashda app.mjs, model.mjs, view.mjs, work.js va style.css fayllarini birga almashtiring. Yangi jadvallar mavjud Turso bazasida avtomatik ochiladi.
+
+## Ishchilarni brigada va ish turi bo‘yicha tartiblash
+
+**Ishchilar → Ishchi qo‘shish** oynasida ism-familiya va ID bilan birga brigada hamda ish turini kiriting. Ilgari kiritilgan nomlar taklif sifatida ko‘rinadi. Buyurtmadagi aniq operatsiya tanlansa, ishchi shu operatsiyaga biriktiriladi. Ish turi maydoni bo‘sh bo‘lsa, operatsiya nomi ish turi sifatida olinadi. Ish turi buyurtmaga biriktirishdan alohida yuritiladi. Mavjud ishchini **Guruhini o‘zgartirish** orqali boshqa brigada yoki ish turiga o‘tkazish mumkin.
+
+Netlify’da shu o‘zgarishni joriy qilish uchun GitHub’dagi app.mjs, model.mjs va view.mjs fayllarini birga almashtiring.

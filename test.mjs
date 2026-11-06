@@ -150,9 +150,16 @@ async function loginFlow(t, netlify = false) {
   assert.equal(adminLogin.status, 303);
   assert.match(adminLogin.headers.get('set-cookie'), /Max-Age=2592000/);
   const login = 'Muqaddam1987';
-  const created = await admin('/admin/worker', { login, name: 'Muqaddam' });
+  const created = await admin('/admin/worker', {
+    login, name: 'Muqaddam', brigade: 'Tikuv brigadasi', job: 'Tikuvchi', operation: 1,
+  });
   assert.equal(created.status, 200);
   const adminHtml = await created.text();
+  assert.match(adminHtml, /Tikuv brigadasi · 1 ishchi/);
+  assert.match(adminHtml, /Tikuvchi · 1 ishchi/);
+  const directory = (await (await admin('/?workerSearch=tikuvchi')).text()).split('id="workers"')[1].split('id="report"')[0];
+  assert.match(directory, /Muqaddam1987/);
+  assert.doesNotMatch(directory, /<td>Boshqa<\/td>/);
   const code = adminHtml.match(/<code>([\w-]+)<\/code>/)[1];
   assert.equal((await worker('/auth/options', { login, code: 'bad' }, true)).status, 400);
   const { registration, options } = await (await worker('/auth/options', { login, code }, true)).json();
@@ -203,9 +210,11 @@ async function loginFlow(t, netlify = false) {
   assert.match(dashboard, /value="Birinchi brigada" selected/);
   assert.match(dashboard, /<progress[^>]+value="17" max="100"/);
   assert.match(await (await worker('/')).text(), /Mening oyligim/);
+  assert.match(await (await worker('/')).text(), /Oq ko‘ylak · Yoqa tikish/);
   assert.match(verified.headers.get('set-cookie'), /Max-Age=2592000/);
   assert.equal((await worker('/admin/order/complete', { order: 1 })).status, 403);
   assert.equal((await admin('/admin/order/complete', { order: 1 })).headers.get('location'), '/#completed-orders');
+  assert.equal((await admin('/admin/worker', { login: 'yangi', name: 'Yangi ishchi', operation: 1 })).status, 400);
   for (const account of [admin, worker]) {
     const html = await (await account('/')).text();
     assert.match(html, /<h2>Tugatildi<\/h2>.*?Oq ko‘ylak/s);

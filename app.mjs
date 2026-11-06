@@ -1,5 +1,5 @@
 import { random, digest, checkPassword, one, run, transaction, InputError, need, clean,
-  integer, loginId, activate, createEntry, editEntry, workClock, markNoWork, setMonthClosed } from './model.mjs';
+  integer, loginId, activate, newActivation, saveWorkerGrouping, createEntry, editEntry, workClock, markNoWork, setMonthClosed } from './model.mjs';
 import { adminPage, loginPage, message, monthEntries, monthFrom, workerPage } from './view.mjs';
 
 export function createApp(appOrigin, asset = () => null) {
@@ -179,13 +179,30 @@ export function createApp(appOrigin, asset = () => null) {
     ].map(row => row.map(quote).join(',')).join('\r\n');
   }
 
+  function workerGrouping(data) {
+    const label = value => value === undefined ? undefined : value.trim() ? clean(value, 80) : '';
+    return { brigade: label(data.brigade), job: label(data.job) };
+  }
+
   async function adminAction(res, user, path, data) {
     if (path === '/admin/worker') {
       const login = loginId(data.login);
       const name = clean(data.name);
-      need(!(await one('SELECT id FROM people WHERE login=?', login)), 'Bu ID band.');
-      const result = await run("INSERT INTO people(login,name,role) VALUES(?,?,'worker')", login, name);
-      return send(res, await adminPage(user, monthFrom(), null, { login, code: await activate(result.lastInsertRowid) }));
+      const grouping = workerGrouping(data);
+      const operation = data.operation ? idValue(data.operation) : null;
+      const { code, expires } = newActivation();
+      await transaction(async () => {
+        const task = operation && await one(`SELECT o.name FROM operations o
+          WHERE o.id=? AND o.order_id NOT IN (SELECT order_id FROM completed_orders)`, operation);
+        need(!operation || task, 'Bu operatsiya yopilgan yoki topilmadi.');
+        const result = await run(`INSERT INTO people(login,name,role,activation,activation_until)
+          VALUES(?,?,'worker',?,?) ON CONFLICT(login) DO NOTHING`, login, name, digest(code), expires);
+        need(result.changes === 1, 'Bu ID band.');
+        const worker = result.lastInsertRowid;
+        await saveWorkerGrouping(worker, { ...grouping, job: grouping.job || task?.name });
+        if (operation) await run('INSERT INTO assignments VALUES(?,?)', worker, operation);
+      });
+      return send(res, await adminPage(user, monthFrom(), null, { login, code }));
     }
     if (path === '/admin/reset') {
       const worker = await person(idValue(data.worker));
@@ -195,10 +212,8 @@ export function createApp(appOrigin, asset = () => null) {
     if (path === '/admin/brigade') {
       const worker = idValue(data.worker);
       need(await person(worker), 'Ishchi topilmadi.');
-      const name = String(data.brigade || '').trim();
-      if (name) await run(`INSERT INTO worker_brigades VALUES(?,?)
-        ON CONFLICT(worker) DO UPDATE SET brigade=excluded.brigade`, worker, clean(name, 80));
-      else await run('DELETE FROM worker_brigades WHERE worker=?', worker);
+      const grouping = workerGrouping(data);
+      await transaction(() => saveWorkerGrouping(worker, grouping));
       return redirect(res, '/#workers');
     }
     if (path === '/admin/month/close' || path === '/admin/month/reopen') {
@@ -260,6 +275,7 @@ export function createApp(appOrigin, asset = () => null) {
           const content = admin ? await adminPage(user, month, worker, null, Number(query.get('page')) || 1, {
             order: query.get('todayOrder') ? idValue(query.get('todayOrder')) : null,
             brigade: query.get('brigade'),
+            workerSearch: query.get('workerSearch'),
           }) : await workerPage(user, month, query.get('saved'));
           return send(res, content);
         }

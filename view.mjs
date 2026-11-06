@@ -116,12 +116,64 @@ export async function workerPage(user, month, saved) {
   ${entryRows(history, editable)}</section><script defer src="/work.js"></script>`, user);
 }
 
+const groupKey = value => (value || '').normalize('NFKC').trim().toLocaleLowerCase('uz')
+  .replace(/[‘’ʻʼ]/g, "'").replace(/\s+/g, ' ');
+
+function groupWorkers(workers, field, unassigned) {
+  const groups = new Map();
+  for (const worker of workers) {
+    const key = groupKey(worker[field]);
+    if (!groups.has(key)) groups.set(key, { key, title: worker[field] || unassigned, workers: [] });
+    groups.get(key).workers.push(worker);
+  }
+  return [...groups.values()].sort((a, b) => a.key && b.key ? a.title.localeCompare(b.title, 'uz') : Number(!a.key) - Number(!b.key));
+}
+
+function workerDirectory(workers, operations, sent, offIds, activation, rawSearch) {
+  const search = String(rawSearch || '').slice(0, 120);
+  const query = groupKey(search);
+  const visible = workers.filter(w => [w.name, w.login, w.brigade, w.job].some(value => groupKey(value).includes(query)));
+  const names = (field, id) => `<datalist id="${id}">${groupWorkers(workers, field, '').filter(g => g.key).map(g => option(g.title, g.title)).join('')}</datalist>`;
+  const groupInput = (key, label, value = '') => input(key, label,
+    `maxlength="80" list="worker-${key}-list" value="${escape(value)}"`);
+  const workerRows = list => table(['Ism va familiya', 'ID', 'Kirish kaliti', 'Bugungi yozuv', 'Boshqarish'], list.map(w => [
+    escape(w.name), escape(w.login), w.ready ? 'Faol' : 'Faollashtirilmagan',
+    sent.has(w.id) ? 'Kiritilgan' : offIds.has(w.id) ? 'Ish bo‘lmadi' : '—',
+    `<details><summary>Guruhini o‘zgartirish</summary>
+      ${form('/admin/brigade', hidden('worker', w.id) + groupInput('brigade', 'Brigada', w.brigade) + groupInput('job', 'Ish turi', w.job), 'Saqlash')}</details>
+    <details><summary>Yangi kod</summary><p>Eski kalit va seanslar bekor qilinadi.</p>
+      ${form('/admin/reset#worker-activation', hidden('worker', w.id), 'Yangi kod berish')}</details>`,
+  ]));
+  const groups = groupWorkers(visible, 'brigade', 'Brigada tanlanmagan');
+  return `<section class="card" id="workers"><h2>Ishchilar <span class="badge">${workers.length}</span></h2>
+    ${activation ? `<div id="worker-activation" class="operation" role="status"><h3>Bir martalik kod</h3>
+      <p>${escape(activation.login)} · <code>${escape(activation.code)}</code></p><p>Kodni ishchining o‘ziga bering. 24 soat amal qiladi.</p></div>` : ''}
+    <details class="order"><summary>Ishchi qo‘shish</summary>
+      ${form('/admin/worker#worker-activation', input('name', 'Ism va familiya', 'required maxlength="120"') +
+        input('login', 'Ishchi ID', 'required maxlength="40" placeholder="Muqaddam1987"') +
+        groupInput('brigade', 'Brigada') + groupInput('job', 'Ish turi') +
+        (operations.length ? `<label>Buyurtmadagi operatsiya (ixtiyoriy)<select name="operation">
+          <option value="">Keyin biriktiraman</option>${operations.map(o => option(o.id, o.order_name + ' / ' + o.name)).join('')}</select></label>` : ''),
+        'Ishchini saqlash', 'class="inline"')}
+      <p class="muted">Brigada va ish turi bo‘yicha ishchi o‘z guruhiga tushadi. Dona kiritishi uchun buyurtmadagi operatsiyani tanlang.</p>
+    </details>
+    ${names('brigade', 'worker-brigade-list')}${names('job', 'worker-job-list')}
+    <form method="get" action="/#workers" class="inline">${input('workerSearch', 'Ism, ID, brigada yoki ish turidan qidirish',
+      `type="search" maxlength="120" value="${escape(search)}"`)}<button>Qidirish</button>
+      ${search ? '<a href="/#workers">Qidiruvni tozalash</a>' : ''}</form>
+    ${groups.map(g => `<details class="order" ${search || groups.length === 1 ? 'open' : ''}><summary>${escape(g.title)} · ${g.workers.length} ishchi</summary>
+      ${groupWorkers(g.workers, 'job', 'Ish turi tanlanmagan').map(j => `<details class="operation" ${search ? 'open' : ''}>
+        <summary>${escape(j.title)} · ${j.workers.length} ishchi</summary>${workerRows(j.workers)}</details>`).join('')}</details>`).join('')
+      || '<p class="muted">Ishchi topilmadi.</p>'}</section>`;
+}
+
 export async function adminPage(user, month, worker, activation, pageNumber = 1, filters = {}) {
   const { date, sunday } = workClock();
   const [orders, workers, operations, assignments, rows, today, audit, off, locked, monthAudit] = await Promise.all([
     all(orderList),
-    all(`SELECT p.id, p.login, p.name, g.brigade, EXISTS(SELECT 1 FROM passkeys k WHERE k.person=p.id) ready
-      FROM people p LEFT JOIN worker_brigades g ON g.worker=p.id WHERE p.role='worker' ORDER BY p.name`),
+    all(`SELECT p.id, p.login, p.name, g.brigade, j.job, EXISTS(SELECT 1 FROM passkeys k WHERE k.person=p.id) ready
+      FROM people p LEFT JOIN worker_brigades g ON g.worker=p.id LEFT JOIN worker_jobs j ON j.worker=p.id
+      WHERE p.role='worker' ORDER BY p.name`),
     all(`SELECT o.*, b.name order_name, b.target, COALESCE(SUM(e.qty),0) done
       FROM operations o JOIN orders b ON b.id=o.order_id LEFT JOIN entries e ON e.operation=o.id
       GROUP BY o.id ORDER BY b.id DESC,o.name`),
@@ -155,9 +207,9 @@ export async function adminPage(user, month, worker, activation, pageNumber = 1,
   const relevantOperations = new Set(activeOperations.filter(o => !filters.order || o.order_id === filters.order).map(o => o.id));
   const expected = new Set(assignments.filter(a => relevantOperations.has(a.operation)).map(a => a.worker));
   const submitted = new Set(today.filter(row => !filters.order || row.order_id === filters.order).map(row => row.worker));
-  const roster = workers.filter(w => expected.has(w.id) && (!filters.brigade || w.brigade === filters.brigade));
+  const roster = workers.filter(w => expected.has(w.id) && (!filters.brigade || groupKey(w.brigade) === groupKey(filters.brigade)));
   const missing = roster.filter(w => !submitted.has(w.id) && !offIds.has(w.id));
-  const brigades = [...new Set(workers.map(w => w.brigade).filter(Boolean))].sort();
+  const brigades = groupWorkers(workers, 'brigade', '').filter(g => g.key).map(g => g.title);
   const filterOption = (value, title, selected) =>
     `<option value="${escape(value)}"${selected ? ' selected' : ''}>${escape(title)}</option>`;
   const pageCount = Math.max(1, Math.ceil(Math.max(rows.length, audit.length) / 100));
@@ -172,8 +224,6 @@ export async function adminPage(user, month, worker, activation, pageNumber = 1,
   <section class="cards"><div class="card"><small>ISHCHILAR</small><strong>${workers.length}</strong></div>
   <div class="card"><small>BUGUN KIRITGAN</small><strong>${sent.size}</strong></div>
   <div class="card"><small>BUYURTMALAR</small><strong>${orders.length}</strong></div></section>
-  ${activation ? `<section class="card"><h2>Bir martalik kod</h2><p>${escape(activation.login)} · <code>${escape(activation.code)}</code></p>
-  <p>Kodni ishchining o‘ziga bering. 24 soat amal qiladi.</p></section>` : ''}
   <section class="card" id="today-check"><h2>Bugun kim kiritmadi?</h2>
   <form method="get" action="/#today-check" class="inline">
   <label>Brigada<select name="brigade"><option value="">Barchasi</option>${brigades.map(g => filterOption(g, g, filters.brigade === g)).join('')}</select></label>
@@ -198,13 +248,7 @@ export async function adminPage(user, month, worker, activation, pageNumber = 1,
   <section class="card" id="completed-orders"><h2>Tugatildi</h2>
   ${table(['Buyurtma', 'Reja, dona', 'Operatsiyalar'], completed.map(b => [escape(b.name), b.target,
     operations.filter(o => o.order_id === b.id).map(o => escape(o.name) + ' · ' + o.done + ' dona').join('<br>') || '—']))}</section>
-  <section class="card" id="workers"><h2>Ishchilar</h2>
-  ${form('/admin/worker', input('login', 'Ishchi ID', 'required maxlength="40" placeholder="Muqaddam1987"') + input('name', 'Ism va familiya'), 'Ishchi yaratish', 'class="inline"')}
-  ${table(['Ishchi', 'ID', 'Brigada', 'Kirish kaliti', 'Bugungi yozuv', 'Telefon almashtirish'], workers.map(w => [
-    escape(w.name), escape(w.login), `<details><summary>${escape(w.brigade || 'Brigada tanlanmagan')}</summary>
-    ${form('/admin/brigade', hidden('worker', w.id) + input('brigade', 'Brigada nomi', `maxlength="80" value="${escape(w.brigade)}"`), 'Saqlash')}</details>`,
-    w.ready ? 'Faol' : 'Faollashtirilmagan', sent.has(w.id) ? 'Kiritilgan' : offIds.has(w.id) ? 'Ish bo‘lmadi' : '—',
-    `<details><summary>Yangi kod</summary><p>Eski kalit va seanslar bekor qilinadi.</p>${form('/admin/reset', hidden('worker', w.id), 'Yangi kod berish')}</details>`]))}</section>
+  ${workerDirectory(workers, activeOperations, sent, offIds, activation, filters.workerSearch)}
   <section class="card" id="report"><h2>Oylik hisobot</h2>
   <form method="get" action="/#report" class="inline">${input('month', 'Oy', `type="month" value="${month}" required`)}
   <label>Ishchi<select name="worker"><option value="">Barchasi</option>${workers.map(w => `<option value="${w.id}" ${w.id === worker ? 'selected' : ''}>${escape(w.name)} · ${escape(w.login)}</option>`).join('')}</select></label><button>Ko‘rish</button></form>
